@@ -4,6 +4,8 @@ import cors from "cors";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import avatar from "./routes/avatar.js";
+import postRoutes from "./routes/postRoutes.js";
+import bodyParser from "body-parser";
 
 dotenv.config();
 const app = express();
@@ -16,6 +18,7 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.use("/api", authRoutes);
 app.use("/api/avatar", avatar);
+app.use("/api/posts", postRoutes);
 
 // Connect DB and start server
 connectDB();
