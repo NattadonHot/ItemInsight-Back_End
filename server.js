@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
+import avatar from "./routes/avatar.js";
 
 dotenv.config();
 const app = express();
@@ -14,6 +15,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use("/api", authRoutes);
+app.use("/api/avatar", avatar);
 
 // Connect DB and start server
 connectDB();
