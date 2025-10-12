@@ -3,44 +3,27 @@ import multer from "multer";
 import axios from "axios";
 import FormData from "form-data";
 import crypto from "crypto";
+import mongoose from "mongoose";
 import Post from "../models/Post.js";
+import auth from "../middleware/auth.js"; // 🔑 Import the middleware
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ฟังก์ชันสร้าง signature สำหรับ upload
+// --- Your Cloudinary helper functions (no changes needed here) ---
 function generateUploadSignature(folder, timestamp, apiSecret) {
   const stringToSign = `folder=${folder}&timestamp=${timestamp}${apiSecret}`;
   return crypto.createHash("sha1").update(stringToSign).digest("hex");
 }
-
-// ฟังก์ชันสร้าง signature สำหรับลบ
 function generateDeleteSignature(publicId, timestamp, apiSecret) {
   const stringToSign = `public_id=${publicId}&timestamp=${timestamp}${apiSecret}`;
   return crypto.createHash("sha1").update(stringToSign).digest("hex");
 }
-
-// ลบรูปจาก Cloudinary
 async function deleteFromCloudinary(publicId, cloudName, apiKey, apiSecret) {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const signature = generateDeleteSignature(publicId, timestamp, apiSecret);
-
-  const formData = new URLSearchParams();
-  formData.append("public_id", publicId);
-  formData.append("api_key", apiKey);
-  formData.append("timestamp", timestamp.toString());
-  formData.append("signature", signature);
-
-  const response = await axios.post(
-    `https://api.cloudinary.com/v1_1/${cloudName}/image/destroy`,
-    formData,
-    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-  );
-
-  return response.data;
+  // ... implementation ...
 }
 
-// upload image ไป Cloudinary
+// แก้ไขฟังก์ชันนี้
 async function uploadToCloudinary(fileBuffer, fileName, folder, cloudName, apiKey, apiSecret) {
   const timestamp = Math.floor(Date.now() / 1000);
   const signature = generateUploadSignature(folder, timestamp, apiSecret);
@@ -54,46 +37,53 @@ async function uploadToCloudinary(fileBuffer, fileName, folder, cloudName, apiKe
 
   const cloudinaryUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
 
-  const response = await axios.post(cloudinaryUrl, formData, {
-    headers: formData.getHeaders(),
-  });
-
-  return response.data;
+  // 👇 --- เพิ่ม try...catch ตรงนี้ --- 👇
+  try {
+    const response = await axios.post(cloudinaryUrl, formData, {
+      headers: formData.getHeaders(),
+    });
+    return response.data; // ถ้าสำเร็จ จะคืนค่าข้อมูลรูปภาพ
+  } catch (error) {
+    // 🚨 ถ้าเกิด Error, ให้แสดงข้อมูล error ที่ Cloudinary ส่งกลับมา
+    console.error("❌ ERROR uploading to Cloudinary:", error.response?.data || error.message);
+    // ไม่ต้องคืนค่าอะไร ปล่อยให้มันเป็น undefined เพื่อให้โค้ดหลักรู้ว่ามีปัญหา
+    // หรือจะ throw error อีกครั้งก็ได้
+    // throw new Error("Cloudinary upload failed");
+    return undefined; // คืนค่า undefined อย่างชัดเจน
+  }
 }
 
-// POST /api/posts — สร้างโพสต์ใหม่
-router.post("/", upload.array("images"), async (req, res) => {
+// ✅ POST /api/posts — Create a new post (SECURED)
+router.post("/", auth, upload.array("images"), async (req, res) => {
   try {
-    const { title, subtitle, blocks, category, productLinks, userId } = req.body;
-
     const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME_POST;
     const API_KEY = process.env.CLOUDINARY_API_KEY_POST;
     const API_SECRET = process.env.CLOUDINARY_API_SECRET_POST;
+    
+    // Get data from request body (NO userId here)
+    const { title, subtitle, blocks, category, productLinks } = req.body;
+    
+    // Get the user ID SECURELY from the middleware
+    const userId = req.user.id;
 
-    if (!CLOUD_NAME || !API_KEY || !API_SECRET) {
-      return res.status(500).json({ message: "Cloudinary credentials missing" });
-    }
-
+    // --- The rest of your logic ---
     let parsedBlocks = typeof blocks === "string" ? JSON.parse(blocks) : blocks || [];
-    let parsedLinks = typeof productLinks === "string" ? JSON.parse(productLinks) : productLinks || [];
+    let parsedLinks = (typeof productLinks === "string" ? JSON.parse(productLinks) : productLinks || []).map(link => ({
+      name: link.name || "Unnamed product",
+      url: link.url || "",
+    }));
 
     const uploadedImages = [];
     if (req.files && req.files.length > 0) {
       for (let file of req.files) {
-        const result = await uploadToCloudinary(
-          file.buffer,
-          file.originalname,
-          "blog/posts",
-          CLOUD_NAME,
-          API_KEY,
-          API_SECRET
-        );
+        const result = await uploadToCloudinary(file.buffer, file.originalname, "blog/posts", CLOUD_NAME, API_KEY, API_SECRET);
+        console.log("Cloudinary Response:", result);
         uploadedImages.push({ url: result.secure_url, publicId: result.public_id });
       }
     }
 
     const newPost = new Post({
-      userId,
+      userId: userId, // Use the secure ID from the token
       title,
       subtitle,
       blocks: parsedBlocks,
@@ -104,38 +94,37 @@ router.post("/", upload.array("images"), async (req, res) => {
 
     await newPost.save();
     res.status(201).json({ success: true, post: newPost });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// POST /api/posts/upload-image — upload image แยก (Editor.js)
-router.post("/upload-image", upload.single("image"), async (req, res) => {
+
+// ✅ DELETE /api/posts/:id — Delete a post (SECURED)
+router.delete("/:id", auth, async (req, res) => {
   try {
+    const post = await Post.findById(req.params.id);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    // Authorization check: Does the logged-in user own this post?
+    if (post.userId.toString() !== req.user.id) {
+        return res.status(403).json({ success: false, message: "Forbidden: You are not authorized to delete this post." });
+    }
+
+    // --- Proceed with deletion ---
     const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME_POST;
-    const API_KEY = process.env.CLOUDINARY_API_KEY_POST;
-    const API_SECRET = process.env.CLOUDINARY_API_SECRET_POST;
+    // ... delete from cloudinary logic ...
 
-    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
-
-    const result = await uploadToCloudinary(
-      req.file.buffer,
-      req.file.originalname,
-      "blog/editor-images",
-      CLOUD_NAME,
-      API_KEY,
-      API_SECRET
-    );
-
-    res.json({ success: true, url: result.secure_url, public_id: result.public_id });
+    await Post.findByIdAndDelete(post._id);
+    res.json({ success: true, message: "Post deleted successfully" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// GET /api/posts — ดึงโพสต์ทั้งหมด
 router.get("/", async (req, res) => {
   try {
     const { page = 1, limit = 10, category, search } = req.query;
@@ -157,43 +146,10 @@ router.get("/", async (req, res) => {
   }
 });
 
-// GET /api/posts/:slug — ดึงโพสต์ตาม slug
-router.get("/:slug", async (req, res) => {
-  try {
-    const post = await Post.findOne({ slug: req.params.slug })
-      .populate('userId', 'username profileImage'); // ⭐ เพิ่มบรรทัดนี้
-    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
-    res.json({ success: true, post });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+// --- Your other routes (GET) can remain public (no `auth` middleware needed) ---
+router.get("/", async (req, res) => { /* ... */ });
+router.get("/:slug", async (req, res) => { /* ... */ });
+router.post("/upload-image", auth, upload.single("image"), async (req, res) => { /* ... */ });
 
-// DELETE /api/posts/:id — ลบโพสต์ + ลบรูปใน Cloudinary
-router.delete("/:id", async (req, res) => {
-  try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
-
-    const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
-    const API_KEY = process.env.CLOUDINARY_API_KEY;
-    const API_SECRET = process.env.CLOUDINARY_API_SECRET;
-
-    for (let img of post.images || []) {
-      try {
-        await deleteFromCloudinary(img.publicId, CLOUD_NAME, API_KEY, API_SECRET);
-      } catch (err) {
-        console.warn("Failed to delete image:", img.publicId, err.message);
-      }
-    }
-
-    await Post.findByIdAndDelete(post._id);
-    res.json({ success: true, message: "Post deleted successfully" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
 
 export default router;
