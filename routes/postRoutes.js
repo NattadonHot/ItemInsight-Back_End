@@ -144,6 +144,7 @@ router.get("/", async (req, res) => {
     if (search) filter.title = { $regex: search, $options: "i" };
 
     const posts = await Post.find(filter)
+      .populate('userId', 'username avatarUrl') // ⭐ แก้เป็น avatarUrl
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(Number(limit));
@@ -159,7 +160,8 @@ router.get("/", async (req, res) => {
 // GET /api/posts/:slug — ดึงโพสต์ตาม slug
 router.get("/:slug", async (req, res) => {
   try {
-    const post = await Post.findOne({ slug: req.params.slug });
+    const post = await Post.findOne({ slug: req.params.slug })
+      .populate('userId', 'username profileImage'); // ⭐ เพิ่มบรรทัดนี้
     if (!post) return res.status(404).json({ success: false, message: "Post not found" });
     res.json({ success: true, post });
   } catch (err) {
