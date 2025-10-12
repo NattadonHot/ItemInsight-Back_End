@@ -1,13 +1,13 @@
-import express from "express";
 import dotenv from "dotenv";
+dotenv.config();
+
+import express from "express";
 import cors from "cors";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import avatar from "./routes/avatar.js";
 import postRoutes from "./routes/postRoutes.js";
-import bodyParser from "body-parser";
 
-dotenv.config();
 const app = express();
 
 // Middleware
