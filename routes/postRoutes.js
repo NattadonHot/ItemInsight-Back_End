@@ -10,7 +10,7 @@ import auth from "../middleware/auth.js"; // 🔑 Import the middleware
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// --- Your Cloudinary helper functions (no changes needed here) ---
+// --- Cloudinary helper functions ---
 function generateUploadSignature(folder, timestamp, apiSecret) {
   const stringToSign = `folder=${folder}&timestamp=${timestamp}${apiSecret}`;
   return crypto.createHash("sha1").update(stringToSign).digest("hex");
@@ -23,7 +23,7 @@ async function deleteFromCloudinary(publicId, cloudName, apiKey, apiSecret) {
   // ... implementation ...
 }
 
-// แก้ไขฟังก์ชันนี้
+// ✅ ฟังก์ชันอัปโหลดรูปภาพ
 async function uploadToCloudinary(fileBuffer, fileName, folder, cloudName, apiKey, apiSecret) {
   const timestamp = Math.floor(Date.now() / 1000);
   const signature = generateUploadSignature(folder, timestamp, apiSecret);
@@ -37,38 +37,31 @@ async function uploadToCloudinary(fileBuffer, fileName, folder, cloudName, apiKe
 
   const cloudinaryUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
 
-  // 👇 --- เพิ่ม try...catch ตรงนี้ --- 👇
   try {
     const response = await axios.post(cloudinaryUrl, formData, {
       headers: formData.getHeaders(),
     });
-    return response.data; // ถ้าสำเร็จ จะคืนค่าข้อมูลรูปภาพ
+    return response.data;
   } catch (error) {
-    // 🚨 ถ้าเกิด Error, ให้แสดงข้อมูล error ที่ Cloudinary ส่งกลับมา
     console.error("❌ ERROR uploading to Cloudinary:", error.response?.data || error.message);
-    // ไม่ต้องคืนค่าอะไร ปล่อยให้มันเป็น undefined เพื่อให้โค้ดหลักรู้ว่ามีปัญหา
-    // หรือจะ throw error อีกครั้งก็ได้
-    // throw new Error("Cloudinary upload failed");
-    return undefined; // คืนค่า undefined อย่างชัดเจน
+    return undefined;
   }
 }
 
-// ✅ POST /api/posts — Create a new post (SECURED)
+// ✅ POST /api/posts — Create new post (secured)
 router.post("/", auth, upload.array("images"), async (req, res) => {
   try {
     const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME_POST;
     const API_KEY = process.env.CLOUDINARY_API_KEY_POST;
     const API_SECRET = process.env.CLOUDINARY_API_SECRET_POST;
-    
-    // Get data from request body (NO userId here)
+
     const { title, subtitle, blocks, category, productLinks } = req.body;
-    
-    // Get the user ID SECURELY from the middleware
     const userId = req.user.id;
 
-    // --- The rest of your logic ---
-    let parsedBlocks = typeof blocks === "string" ? JSON.parse(blocks) : blocks || [];
-    let parsedLinks = (typeof productLinks === "string" ? JSON.parse(productLinks) : productLinks || []).map(link => ({
+    const parsedBlocks = typeof blocks === "string" ? JSON.parse(blocks) : blocks || [];
+    const parsedLinks = (
+      typeof productLinks === "string" ? JSON.parse(productLinks) : productLinks || []
+    ).map((link) => ({
       name: link.name || "Unnamed product",
       url: link.url || "",
     }));
@@ -76,14 +69,21 @@ router.post("/", auth, upload.array("images"), async (req, res) => {
     const uploadedImages = [];
     if (req.files && req.files.length > 0) {
       for (let file of req.files) {
-        const result = await uploadToCloudinary(file.buffer, file.originalname, "blog/posts", CLOUD_NAME, API_KEY, API_SECRET);
+        const result = await uploadToCloudinary(
+          file.buffer,
+          file.originalname,
+          "blog/posts",
+          CLOUD_NAME,
+          API_KEY,
+          API_SECRET
+        );
         console.log("Cloudinary Response:", result);
         uploadedImages.push({ url: result.secure_url, publicId: result.public_id });
       }
     }
 
     const newPost = new Post({
-      userId: userId, // Use the secure ID from the token
+      userId,
       title,
       subtitle,
       blocks: parsedBlocks,
@@ -94,26 +94,22 @@ router.post("/", auth, upload.array("images"), async (req, res) => {
 
     await newPost.save();
     res.status(201).json({ success: true, post: newPost });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-
-// ✅ DELETE /api/posts/:id — Delete a post (SECURED)
+// ✅ DELETE /api/posts/:id — Delete post
 router.delete("/:id", auth, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    // Authorization check: Does the logged-in user own this post?
     if (post.userId.toString() !== req.user.id) {
-        return res.status(403).json({ success: false, message: "Forbidden: You are not authorized to delete this post." });
+      return res.status(403).json({ success: false, message: "Forbidden: You are not authorized to delete this post." });
     }
 
-    // --- Proceed with deletion ---
     const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME_POST;
     // ... delete from cloudinary logic ...
 
@@ -125,6 +121,7 @@ router.delete("/:id", auth, async (req, res) => {
   }
 });
 
+// ✅ GET /api/posts — Get all posts
 router.get("/", async (req, res) => {
   try {
     const { page = 1, limit = 10, category, search } = req.query;
@@ -133,7 +130,7 @@ router.get("/", async (req, res) => {
     if (search) filter.title = { $regex: search, $options: "i" };
 
     const posts = await Post.find(filter)
-      .populate('userId', 'username avatarUrl') // ⭐ แก้เป็น avatarUrl
+      .populate("userId", "username avatarUrl")
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(Number(limit));
@@ -146,10 +143,26 @@ router.get("/", async (req, res) => {
   }
 });
 
-// --- Your other routes (GET) can remain public (no `auth` middleware needed) ---
-router.get("/", async (req, res) => { /* ... */ });
-router.get("/:slug", async (req, res) => { /* ... */ });
-router.post("/upload-image", auth, upload.single("image"), async (req, res) => { /* ... */ });
+// ✅ GET /api/posts/:id — Get single post by ID
+router.get("/:id", async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id).populate("userId", "username avatarUrl");
 
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    res.json({ success: true, data: post });
+  } catch (err) {
+    console.error("Error fetching post:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// (Optional) สำหรับ slug ในอนาคต
+// router.get("/slug/:slug", async (req, res) => { ... });
+
+// (Optional) สำหรับ upload image แยก
+// router.post("/upload-image", auth, upload.single("image"), async (req, res) => { ... });
 
 export default router;
