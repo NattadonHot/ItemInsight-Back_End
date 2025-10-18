@@ -9,7 +9,7 @@ import auth from "../middleware/auth.js";
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// -------------------- Cloudinary --------------------
+// --- Cloudinary helper functions ---
 function generateUploadSignature(folder, timestamp, apiSecret) {
   const stringToSign = `folder=${folder}&timestamp=${timestamp}${apiSecret}`;
   return crypto.createHash("sha1").update(stringToSign).digest("hex");
@@ -33,46 +33,67 @@ async function deleteFromCloudinary(publicId, cloudName, apiKey, apiSecret) {
   const response = await axios.post(
     `https://api.cloudinary.com/v1_1/${cloudName}/image/destroy`,
     formData,
-    {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    }
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
   );
 
   return response.data;
 }
 
-// -------------------- CREATE POST --------------------
+// --- Upload image to Cloudinary ---
+async function uploadToCloudinary(fileBuffer, fileName, folder, cloudName, apiKey, apiSecret) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = generateUploadSignature(folder, timestamp, apiSecret);
+
+  const formData = new FormData();
+  formData.append("file", fileBuffer, { filename: fileName });
+  formData.append("folder", folder);
+  formData.append("api_key", apiKey);
+  formData.append("timestamp", timestamp.toString());
+  formData.append("signature", signature);
+
+  const cloudinaryUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
+
+  try {
+    const response = await axios.post(cloudinaryUrl, formData, {
+      headers: formData.getHeaders(),
+    });
+    return response.data;
+  } catch (error) {
+    console.error("❌ ERROR uploading to Cloudinary:", error.response?.data || error.message);
+    return undefined;
+  }
+}
+
+// --- CREATE POST ---
 router.post("/", auth, upload.array("images"), async (req, res) => {
   try {
     const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME_POST;
     const API_KEY = process.env.CLOUDINARY_API_KEY_POST;
     const API_SECRET = process.env.CLOUDINARY_API_SECRET_POST;
 
-    const { title, subtitle, blocks, category, productLinks, slug } = req.body;
+    const { title, subtitle, blocks, category, productLinks } = req.body;
     const userId = req.user.id;
 
     const parsedBlocks = typeof blocks === "string" ? JSON.parse(blocks) : blocks || [];
-    const parsedLinks = (typeof productLinks === "string" ? JSON.parse(productLinks) : productLinks || [])
-      .map(link => ({ name: link.name || "Unnamed product", url: link.url || "" }));
+    const parsedLinks = (typeof productLinks === "string" ? JSON.parse(productLinks) : productLinks || []).map(link => ({
+      name: link.name || "Unnamed product",
+      url: link.url || "",
+    }));
 
     const uploadedImages = [];
     if (req.files && req.files.length > 0) {
-      for (const file of req.files) {
-        const folder = "blog/posts";
-        const timestamp = Math.floor(Date.now() / 1000);
-        const signature = generateUploadSignature(folder, timestamp, API_SECRET);
-
-        const formData = new FormData();
-        formData.append("file", file.buffer, { filename: file.originalname });
-        formData.append("folder", folder);
-        formData.append("api_key", API_KEY);
-        formData.append("timestamp", timestamp.toString());
-        formData.append("signature", signature);
-
-        const cloudinaryUrl = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`;
-        const response = await axios.post(cloudinaryUrl, formData, { headers: formData.getHeaders() });
-
-        uploadedImages.push({ url: response.data.secure_url, public_id: response.data.public_id });
+      for (let file of req.files) {
+        const result = await uploadToCloudinary(
+          file.buffer,
+          file.originalname,
+          "blog/posts",
+          CLOUD_NAME,
+          API_KEY,
+          API_SECRET
+        );
+        if (result) {
+          uploadedImages.push({ url: result.secure_url, publicId: result.public_id });
+        }
       }
     }
 
@@ -84,7 +105,6 @@ router.post("/", auth, upload.array("images"), async (req, res) => {
       images: uploadedImages,
       productLinks: parsedLinks,
       category: category || "other",
-      slug: slug || title.toLowerCase().replace(/\s+/g, "-"),
     });
 
     await newPost.save();
@@ -95,7 +115,7 @@ router.post("/", auth, upload.array("images"), async (req, res) => {
   }
 });
 
-// -------------------- DELETE POST --------------------
+// --- DELETE POST ---
 router.delete("/:id", auth, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -109,15 +129,14 @@ router.delete("/:id", auth, async (req, res) => {
     const API_KEY = process.env.CLOUDINARY_API_KEY_POST;
     const API_SECRET = process.env.CLOUDINARY_API_SECRET_POST;
 
-    // ลบรูปทุกภาพจาก Cloudinary
+    // Delete images from Cloudinary
     if (post.images && post.images.length > 0) {
-      for (const img of post.images) {
-        if (img.public_id) {
+      for (let img of post.images) {
+        if (img.publicId) {
           try {
-            const result = await deleteFromCloudinary(img.public_id, CLOUD_NAME, API_KEY, API_SECRET);
-            console.log(`Deleted image ${img.public_id}: ${result.result}`);
+            await deleteFromCloudinary(img.publicId, CLOUD_NAME, API_KEY, API_SECRET);
           } catch (err) {
-            console.error(`Error deleting Cloudinary image ${img.public_id}:`, err.message);
+            console.error(`Failed to delete image ${img.publicId}:`, err.message);
           }
         }
       }
@@ -131,7 +150,7 @@ router.delete("/:id", auth, async (req, res) => {
   }
 });
 
-// -------------------- GET POSTS --------------------
+// --- GET ALL POSTS ---
 router.get("/", async (req, res) => {
   try {
     const { page = 1, limit = 10, category, search } = req.query;
@@ -153,7 +172,22 @@ router.get("/", async (req, res) => {
   }
 });
 
-// -------------------- GET POST BY ID --------------------
+// --- GET POSTS BY USER ID ---
+router.get("/user/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const posts = await Post.find({ userId })
+      .populate("userId", "username avatarUrl")
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, data: posts });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- GET POST BY ID ---
 router.get("/:id", async (req, res) => {
   try {
     const post = await Post.findById(req.params.id).populate("userId", "username avatarUrl");
@@ -165,27 +199,6 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// ✅ GET /api/posts/user/:id — Get posts by userId
-router.get("/user/:id", auth, async (req, res) => {
-  try {
-    const userId = req.params.id;
-    const posts = await Post.find({ userId })
-      .populate("userId", "username avatarUrl")
-      .sort({ createdAt: -1 });
-
-    res.json({ success: true, data: posts });
-  } catch (err) {
-    console.error("Error fetching user posts:", err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// (Optional) สำหรับ slug ในอนาคต
-// router.get("/slug/:slug", async (req, res) => { ... });
-
-// (Optional) สำหรับ upload image แยก
-// router.post("/upload-image", auth, upload.single("image"), async (req, res) => { ... });
-// -------------------- GET POST BY SLUG --------------------
 router.get("/slug/:slug", async (req, res) => {
   try {
     const post = await Post.findOne({ slug: req.params.slug }).populate("userId", "username avatarUrl");
