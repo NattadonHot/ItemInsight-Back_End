@@ -159,6 +159,21 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+// ✅ GET /api/posts/user/:id — Get posts by userId
+router.get("/user/:id", auth, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const posts = await Post.find({ userId })
+      .populate("userId", "username avatarUrl")
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, data: posts });
+  } catch (err) {
+    console.error("Error fetching user posts:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // (Optional) สำหรับ slug ในอนาคต
 // router.get("/slug/:slug", async (req, res) => { ... });
 
